@@ -1,0 +1,13 @@
+//
+// Created by Erick on 10/8/26.
+//
+
+#ifndef PROYECTOS_PICO_USB_DESCRIPTORS_H
+#define PROYECTOS_PICO_USB_DESCRIPTORS_H
+
+enum {
+    REPORT_ID_KEYBOARD = 1,
+    REPORT_ID_COUNT
+};
+
+#endif //PROYECTOS_PICO_USB_DESCRIPTORS_H
