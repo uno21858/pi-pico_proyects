@@ -5,11 +5,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "bsp/board_api.h"
+#include "tusb_config.h"
 
 #include "usb_descriptors.h"
-#include "../../pico-sdk/lib/btstack/src/btstack_debug.h"
 #include "class/hid/hid_device.h"
 #include "device/usbd.h"
 
@@ -38,7 +37,7 @@ void hid_task(void);
 #define BOARD_TUD_RHPORT 0
 #endif
 
-void main(void) {
+int main(void) {
     board_init();
 
     // inicia el dispositivo en el root stack configurado del puerto
@@ -156,25 +155,25 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
     /// DECODIFICADOR
     if (sscanf(p, "%s %[^\n]", cmd , arg) >= 1) {
         // Avanza El puntero 'p' hasta la siguiente linea del script
-        while (*p != "\n" && *p != '\0') p++;
+        while (*p != '\n' && *p != '\0') p++;
         if (*p == '\n') p++;
     }
 
     // Unidad de ejecucion
     // evaluamos directamente la primera letra del comando ('D', 'E', 'G', 'S')
 
-    uint8_t keycode = {0};
+    uint8_t keycode[6] = {0};
 
     switch (cmd[0]) {
         case 'D' : // Delay
             espera_ms = board_millis() + atoi(arg);
             break;
         case 'E' : // Enter
-            keycode = HID_KEY_ENTER;
+            keycode[0] = HID_KEY_ENTER;
             precionado = true;
             break;
         case 'G' : // Combinaciones con la tecla windows
-            keycode = (arg[0] >= 'a' && arg[0] <= 'z') ? (arg[0] - 'a' + HID_KEY_A) : 0;
+            keycode[0] = (arg[0] >= 'a' && arg[0] <= 'z') ? (arg[0] - 'a' + HID_KEY_A) : 0;
             tud_hid_keyboard_report(report_id, KEYBOARD_MODIFIER_LEFTGUI, keycode);
             precionado = true;
             break;
@@ -182,7 +181,7 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
         case 'S' : //String
             if (arg[letra_idx] != '\0') {
                 char c = arg[letra_idx];
-                keycode = (c >= 'a' && c <= 'z') ? (c - 'a' + HID_KEY_A) : (c == ' ' ? HID_KEY_SPACE : 0);
+                keycode[0] = (c >= 'a' && c <= 'z') ? (c - 'a' + HID_KEY_A) : (c == ' ' ? HID_KEY_SPACE : 0);
 
                 tud_hid_keyboard_report(report_id, 0, keycode);
                 precionado = true;
@@ -199,6 +198,7 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
             break;
 
     }
+
 
 
 
@@ -239,8 +239,21 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_
     }
 }
 
+// Se invoca cuando el host pide un reporte (GET_REPORT). No manejamos reportes
+// de entrada bajo demanda (solo los enviamos por polling), así que no hay nada que devolver.
+uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
+    uint8_t* buffer, uint16_t reqlen) {
+    (void) instance;
+    (void) report_id;
+    (void) report_type;
+    (void) buffer;
+    (void) reqlen;
+
+    return 0;
+}
+
 //Asegurarme visualemnte q la computadora esta recibiendo los datos de manera correcta
-void uint16_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
+void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
     uint8_t const* buffer, uint16_t bufsize) {
 
     (void) instance;
