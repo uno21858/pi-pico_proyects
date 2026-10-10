@@ -7,13 +7,14 @@
 #include <string.h>
 #include "bsp/board_api.h"
 #include "tusb_config.h"
+#include "pico/cyw43_arch.h"
 
 #include "usb_descriptors.h"
 #include "class/hid/hid_device.h"
 #include "device/usbd.h"
 
 
-// Mostrar el estado de la usb mediante el led
+// Mostrar el estado de la usb mediante el led (vía chip WiFi, ver cyw43_led_task)
 
 /* Blink pattern
  * - 250 ms  : no montado
@@ -27,11 +28,10 @@ enum {
     BLINK_SUSPENDED = 2500,
 };
 
-
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
-void led_blinking_task(void);
 void hid_task(void);
+void led_blinking_task(void);
 
 #ifndef BOARD_TUD_RHPORT
 #define BOARD_TUD_RHPORT 0
@@ -39,6 +39,10 @@ void hid_task(void);
 
 int main(void) {
     board_init();
+
+    // El LED de la Pico 2 W vive en el chip WiFi, no en un GPIO normal;
+    // esto solo levanta el driver para poder prenderlo/apagarlo (sin red).
+    cyw43_arch_init();
 
     // inicia el dispositivo en el root stack configurado del puerto
 
@@ -70,7 +74,6 @@ void tud_mount_cb(void) {
 void tud_umount_cb(void) {
     blink_interval_ms = BLINK_NOT_MOUNTED;
 }
-
 
 // Invocado cuando el bus del usb esta suspendido
 void tud_suspend_cb(bool remote_wakeup_en) {
@@ -115,11 +118,19 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
 }
 */
 
+// Tabla de conversión ASCII -> (shift, keycode) que ya trae TinyUSB.
+// conv_table[c][0] = 1 si el caracter 'c' necesita Shift.
+// conv_table[c][1] = keycode HID correspondiente.
+static uint8_t const conv_table[128][2] = { HID_ASCII_TO_KEYCODE };
+
 const char duckyScript[] =
-"GUI r\n"
-"DELAY 500\n"
-"STRING hola\n"
-"ENTER\n";
+"GUI r \n"
+"DELAY 5 \n"
+"STRING https://youtu.be/dQw4w9WgXcQ?list=RDdQw4w9WgXcQ\n"
+"ENTER \n"
+"DELAY 50\n"
+"STRING F \n"
+;
 
 
 
@@ -143,8 +154,6 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
         espera_ms = 0;
     }
 
-    if (*p == '\0') return; // fin del script
-
     // Ciclo hardware, una vuelta la presiona, la otra la suelta.
     if (precionado) {
         tud_hid_keyboard_report(report_id, 0 , NULL);
@@ -152,11 +161,18 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
         return;
     }
 
-    /// DECODIFICADOR
-    if (sscanf(p, "%s %[^\n]", cmd , arg) >= 1) {
-        // Avanza El puntero 'p' hasta la siguiente linea del script
-        while (*p != '\n' && *p != '\0') p++;
-        if (*p == '\n') p++;
+    // Solo parseamos/avanzamos de línea cuando NO estamos a medio de un
+    // STRING multi-letra (letra_idx == 0). Mientras falten letras, cmd/arg
+    // (static) ya tienen lo que necesitamos: no hay que re-leer el script.
+    if (letra_idx == 0) {
+        if (*p == '\0') return; // fin del script
+
+        /// DECODIFICADOR
+        if (sscanf(p, "%s %[^\n]", cmd , arg) >= 1) {
+            // Avanza El puntero 'p' hasta la siguiente linea del script
+            while (*p != '\n' && *p != '\0') p++;
+            if (*p == '\n') p++;
+        }
     }
 
     // Unidad de ejecucion
@@ -170,30 +186,35 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
             break;
         case 'E' : // Enter
             keycode[0] = HID_KEY_ENTER;
+            tud_hid_keyboard_report(report_id, 0, keycode);
             precionado = true;
             break;
-        case 'G' : // Combinaciones con la tecla windows
-            keycode[0] = (arg[0] >= 'a' && arg[0] <= 'z') ? (arg[0] - 'a' + HID_KEY_A) : 0;
-            tud_hid_keyboard_report(report_id, KEYBOARD_MODIFIER_LEFTGUI, keycode);
+        case 'G' : { // Combinaciones con la tecla windows
+            unsigned char c = (unsigned char) arg[0];
+            uint8_t modifier = KEYBOARD_MODIFIER_LEFTGUI;
+            if (c < 128 && conv_table[c][0]) modifier |= KEYBOARD_MODIFIER_LEFTSHIFT;
+            keycode[0] = (c < 128) ? conv_table[c][1] : 0;
+
+            tud_hid_keyboard_report(report_id, modifier, keycode);
             precionado = true;
             break;
+        }
 
         case 'S' : //String
             if (arg[letra_idx] != '\0') {
-                char c = arg[letra_idx];
-                keycode[0] = (c >= 'a' && c <= 'z') ? (c - 'a' + HID_KEY_A) : (c == ' ' ? HID_KEY_SPACE : 0);
+                unsigned char c = (unsigned char) arg[letra_idx];
+                uint8_t modifier = (c < 128 && conv_table[c][0]) ? KEYBOARD_MODIFIER_LEFTSHIFT : 0;
+                keycode[0] = (c < 128) ? conv_table[c][1] : 0;
 
-                tud_hid_keyboard_report(report_id, 0, keycode);
+                tud_hid_keyboard_report(report_id, modifier, keycode);
                 precionado = true;
                 letra_idx++;
 
-                // Si quedan mas letras se regrea el puntero para no cambiar de linea
-
-                if (arg[letra_idx] != '\0') {
-                    while (*p != '\n' && p > duckyScript) p--;
-                } else {
-                    letra_idx = 0;
-                }
+                // Si ya no quedan letras, deja letra_idx en 0 para que la
+                // próxima vuelta parsee la siguiente línea del script.
+                if (arg[letra_idx] == '\0') letra_idx = 0;
+            } else {
+                letra_idx = 0;
             }
             break;
 
@@ -266,12 +287,12 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
             uint8_t const kbd_leds = buffer[0];
 
             if (kbd_leds & KEYBOARD_LED_CAPSLOCK) {
-                // Capslock On: disable blink, turn led on
+                // Capslock On: desactiva el parpadeo, prende el led fijo
                 blink_interval_ms = 0;
-                board_led_write(true);
+                cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, true);
             } else {
-                // Caplocks Off: back to normal blink
-                board_led_write(false);
+                // Capslock Off: regresa al parpadeo normal
+                cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
                 blink_interval_ms = BLINK_MOUNTED;
             }
         }
@@ -286,14 +307,14 @@ void led_blinking_task(void) {
     static bool led_state = false;
 
     // Parpadeo apagado
-    if (!blink_interval_ms) return ;
+    if (!blink_interval_ms) return;
 
     // Parpadear cada intervalo ms
     if (board_millis() - start_ms < blink_interval_ms) return; // No tiempo justo
     start_ms += blink_interval_ms;
 
-    board_led_write(led_state);
-    led_state = 1 - led_state;
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_state);
+    led_state = !led_state;
 }
 
 

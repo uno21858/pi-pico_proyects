@@ -40,7 +40,12 @@
 
 // BCD significan Binary Coded Decimal (Decimal Codificado en Binario)
 // En pocas palabras si es usb 1.0, 2.0, 3.0, 3.1 (the usb bible chapter 5)
-#define USB_BCD 0x0300
+//
+// OJO: tiene que coincidir con la velocidad real que configuramos en
+// tusb_config.h (OPT_MODE_FULL_SPEED). Poner 0x0300 (USB 3.0) aquí hace que
+// el host espere un descriptor BOS (obligatorio desde USB 2.1) que este
+// firmware no implementa -> Windows lo rechaza con "device not recognized".
+#define USB_BCD 0x0200
 
 /*
  *Configuracion de la USB. lo que inyecta a la compu o le da la identidad
@@ -180,6 +185,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
   case STRID_SERIAL:
    chr_count = board_usb_get_serial(_desc_str + 1, 32);
+   break;
 
   default:
 
@@ -192,7 +198,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
    chr_count = strlen(str);
    size_t const max_count = sizeof(_desc_str) / sizeof(_desc_str[0]) - 1; // 66/2 = 33 - 1 = 32;
 
-   if (chr_count < max_count) chr_count = max_count;
+   if (chr_count > max_count) chr_count = max_count;
 
    // Convertir ASCII a utf-16
    /**
