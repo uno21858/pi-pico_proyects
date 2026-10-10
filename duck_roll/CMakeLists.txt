@@ -20,8 +20,9 @@ add_executable(duck_roll
 )
 
 # tinyusb_device: trae tusb.h y el stack USB
-# tinyusb_board:  trae board_api.h (board_init, LED, botón)
-target_link_libraries(duck_roll pico_stdlib tinyusb_device tinyusb_board)
+# tinyusb_board:  trae board_api.h (board_init, botón)
+# pico_cyw43_arch_none: driver del chip WiFi (ahí vive el LED en la Pico 2 W), sin red
+target_link_libraries(duck_roll pico_stdlib tinyusb_device tinyusb_board pico_cyw43_arch_none)
 
 # para que encuentre tu propio tusb_config.h y usb_descriptors.h
 target_include_directories(duck_roll PRIVATE ${CMAKE_CURRENT_LIST_DIR})

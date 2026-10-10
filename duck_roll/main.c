@@ -125,10 +125,10 @@ static uint8_t const conv_table[128][2] = { HID_ASCII_TO_KEYCODE };
 
 const char duckyScript[] =
 "GUI r \n"
-"DELAY 5 \n"
+"DELAY 600 \n"
 "STRING https://youtu.be/dQw4w9WgXcQ?list=RDdQw4w9WgXcQ\n"
 "ENTER \n"
-"DELAY 50\n"
+"DELAY 4500\n"
 "STRING F \n"
 ;
 
@@ -143,9 +143,19 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
 
     static const char* p = duckyScript; // programm counter
     static uint32_t espera_ms = 0;
-    static bool precionado = false;
     static char cmd[12], arg[64];
-    static size_t letra_idx = 0;
+    static bool cmd_listo = false;   // true = cmd/arg ya cargados, listos para ejecutarse
+    static bool precionado = false;  // ciclo simple press+release (D/E/G)
+    static size_t letra_idx = 0;     // caracter actual dentro de arg (STRING)
+
+    // Para STRING: cada caracter se manda como ALT + código decimal en el
+    // numpad (ej. 'h' = 104 -> ALT+1,0,4). Esto es independiente del layout
+    // de teclado que tenga Windows (a diferencia de mandar la tecla directo,
+    // que varía si el layout no es US -- ej. ':' sale como 'ñ' en layout
+    // Español Latinoamérica).
+    static uint8_t alt_seq = 0;      // sub-paso dentro del código del caracter actual
+    static char alt_digits[4];
+    static uint8_t alt_ndigits = 0;
 
 
     // Filtro de retrasos
@@ -154,17 +164,18 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
         espera_ms = 0;
     }
 
-    // Ciclo hardware, una vuelta la presiona, la otra la suelta.
+    // Ciclo hardware simple (D/E/G): una vuelta la presiona, la otra la suelta.
     if (precionado) {
         tud_hid_keyboard_report(report_id, 0 , NULL);
         precionado = false;
         return;
     }
 
-    // Solo parseamos/avanzamos de línea cuando NO estamos a medio de un
-    // STRING multi-letra (letra_idx == 0). Mientras falten letras, cmd/arg
-    // (static) ya tienen lo que necesitamos: no hay que re-leer el script.
-    if (letra_idx == 0) {
+    // Solo parseamos/avanzamos de línea cuando el comando anterior ya
+    // terminó por completo (cmd_listo == false). Un STRING puede tardar
+    // muchas vueltas en terminar (varios reportes por caracter), así que
+    // no basta con mirar letra_idx para saber si ya acabó.
+    if (!cmd_listo) {
         if (*p == '\0') return; // fin del script
 
         /// DECODIFICADOR
@@ -173,6 +184,10 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
             while (*p != '\n' && *p != '\0') p++;
             if (*p == '\n') p++;
         }
+
+        cmd_listo = true;
+        letra_idx = 0;
+        alt_ndigits = 0;
     }
 
     // Unidad de ejecucion
@@ -183,13 +198,17 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
     switch (cmd[0]) {
         case 'D' : // Delay
             espera_ms = board_millis() + atoi(arg);
+            cmd_listo = false;
             break;
         case 'E' : // Enter
             keycode[0] = HID_KEY_ENTER;
             tud_hid_keyboard_report(report_id, 0, keycode);
             precionado = true;
+            cmd_listo = false;
             break;
-        case 'G' : { // Combinaciones con la tecla windows
+        case 'G' : { // Combinaciones con la tecla windows (letras: misma
+                      // posición física en casi todos los layouts, no hace
+                      // falta el truco de ALT+código aquí)
             unsigned char c = (unsigned char) arg[0];
             uint8_t modifier = KEYBOARD_MODIFIER_LEFTGUI;
             if (c < 128 && conv_table[c][0]) modifier |= KEYBOARD_MODIFIER_LEFTSHIFT;
@@ -197,27 +216,40 @@ static void send_hid_report(uint8_t report_id, uint32_t btn) {
 
             tud_hid_keyboard_report(report_id, modifier, keycode);
             precionado = true;
+            cmd_listo = false;
             break;
         }
 
-        case 'S' : //String
-            if (arg[letra_idx] != '\0') {
-                unsigned char c = (unsigned char) arg[letra_idx];
-                uint8_t modifier = (c < 128 && conv_table[c][0]) ? KEYBOARD_MODIFIER_LEFTSHIFT : 0;
-                keycode[0] = (c < 128) ? conv_table[c][1] : 0;
+        case 'S' : { //String, caracter por caracter vía ALT+numpad
+            if (arg[letra_idx] == '\0') {
+                cmd_listo = false; // ya no quedan letras, lista la sig. línea
+                break;
+            }
 
-                tud_hid_keyboard_report(report_id, modifier, keycode);
-                precionado = true;
-                letra_idx++;
+            if (alt_ndigits == 0) {
+                // Caracter nuevo: calcula su código decimal (ej. 104 para 'h')
+                unsigned c = (unsigned char) arg[letra_idx];
+                alt_ndigits = (uint8_t) snprintf(alt_digits, sizeof(alt_digits), "%u", c);
+                alt_seq = 0;
+            }
 
-                // Si ya no quedan letras, deja letra_idx en 0 para que la
-                // próxima vuelta parsee la siguiente línea del script.
-                if (arg[letra_idx] == '\0') letra_idx = 0;
+            if (alt_seq < (uint8_t) (2 * alt_ndigits)) {
+                // Pasos pares: presiona el siguiente dígito. Pasos impares:
+                // lo suelta (ALT se mantiene presionado todo el tiempo).
+                if ((alt_seq % 2) == 0) {
+                    uint8_t digit = (uint8_t) (alt_digits[alt_seq / 2] - '0');
+                    keycode[0] = (digit == 0) ? HID_KEY_KEYPAD_0 : (HID_KEY_KEYPAD_1 + (digit - 1));
+                }
+                tud_hid_keyboard_report(report_id, KEYBOARD_MODIFIER_LEFTALT, keycode);
+                alt_seq++;
             } else {
-                letra_idx = 0;
+                // Suelta ALT por completo -> Windows inserta el caracter
+                tud_hid_keyboard_report(report_id, 0, NULL);
+                alt_ndigits = 0;
+                letra_idx++;
             }
             break;
-
+        }
     }
 
 
